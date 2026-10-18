@@ -107,6 +107,36 @@ class ClusterTest {
 
     @Test
     @Timeout(60)
+    void recordsSurviveBrokerRestart() throws Exception {
+        try (EmbeddedZooKeeper zk = new EmbeddedZooKeeper(directory.resolve("zk"), 0, 2000)) {
+            BrokerServer broker = start(zk, 0);
+            try {
+                waitFor(() -> broker.liveBrokerCount() == 1 && broker.isController());
+                try (Admin admin = new Admin("127.0.0.1:" + broker.port())) {
+                    admin.createTopic("orders", 1, (short) 1);
+                }
+                try (Producer producer = new Producer("127.0.0.1:" + broker.port())) {
+                    producer.send("orders", "kept");
+                    producer.send("orders", "too");
+                }
+            } finally {
+                broker.close();
+            }
+            BrokerServer restarted = start(zk, 0);
+            try {
+                waitFor(() -> restarted.leader("orders", 0) == 0);
+                try (Consumer consumer = new Consumer("127.0.0.1:" + restarted.port())) {
+                    consumer.assign("orders", 0);
+                    assertEquals(List.of("kept", "too"), collect(consumer, 2));
+                }
+            } finally {
+                restarted.close();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(60)
     void keyedRecordsStayOnTheSamePartition() throws Exception {
         try (EmbeddedZooKeeper zk = new EmbeddedZooKeeper(directory.resolve("zk"), 0, 2000)) {
             BrokerServer broker = start(zk, 0);

@@ -34,7 +34,7 @@ mvn -B -DskipTests package
 Start coordination and two brokers, each in its own terminal:
 
 ```shell
-bin/simplekafka zk --port 2181 --data-dir data/zookeeper
+bin/simplekafka zk --config config/zookeeper.properties
 bin/simplekafka broker --config config/server-0.properties
 bin/simplekafka broker --config config/server-1.properties
 ```
@@ -43,19 +43,19 @@ Create a topic, write five records, and read them from partition 0:
 
 ```shell
 bin/simplekafka topic create \
-  --bootstrap localhost:9092 \
+  --bootstrap 127.0.0.1:9092 \
   --topic orders \
   --partitions 3 \
   --replication-factor 2
 
 bin/simplekafka produce \
-  --bootstrap localhost:9092 \
+  --bootstrap 127.0.0.1:9092 \
   --topic orders \
   --message hello \
   --count 5
 
 bin/simplekafka consume \
-  --bootstrap localhost:9092 \
+  --bootstrap 127.0.0.1:9092 \
   --topic orders \
   --partition 0 \
   --max-messages 5

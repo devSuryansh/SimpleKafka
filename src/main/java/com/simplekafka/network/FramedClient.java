@@ -53,15 +53,11 @@ public final class FramedClient implements Closeable {
             }
             try {
                 return connection(node, timeoutMs).send(payload, timeoutMs);
-            } catch (IOException first) {
+            } catch (IOException exception) {
+                // The broker may already have applied the request, so this is not resent.
                 drop(node);
-                try {
-                    return connection(node, timeoutMs).send(payload, timeoutMs);
-                } catch (IOException second) {
-                    drop(node);
-                    throw new KafkaException(Errors.NETWORK_EXCEPTION,
-                            "request to " + node + " failed", second);
-                }
+                throw new KafkaException(Errors.NETWORK_EXCEPTION,
+                        "request to " + node + " failed", exception);
             }
         }
     }

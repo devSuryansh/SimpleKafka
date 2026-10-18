@@ -83,6 +83,9 @@ final class ReplicaManager {
         if (!running.compareAndSet(true, false)) {
             return;
         }
+        // Closing the client unblocks a fetch stuck in a socket read. The logs
+        // stay open until that thread has left append.
+        client.close();
         if (fetcher != null) {
             fetcher.interrupt();
             try {
@@ -94,7 +97,6 @@ final class ReplicaManager {
         for (Replica replica : replicas.values()) {
             replica.log.close();
         }
-        client.close();
     }
 
     void onPartitionUpdated(String topic, int partition, int leader, List<Integer> replicaIds, List<Integer> isr) {
@@ -112,7 +114,7 @@ final class ReplicaManager {
                     replica.log.updateHighWatermark(replica.log.logEndOffset());
                     replica.role = Role.LEADER;
                     replica.leaderId = brokerId;
-                    replica.isr = isr.isEmpty() ? List.of(brokerId) : List.copyOf(isr);
+                    replica.isr = isr.isEmpty() ? List.of(brokerId) : sorted(isr);
                     replica.leaderSinceMs = System.currentTimeMillis();
                     replica.followers.clear();
                     recompute(replica);
@@ -123,7 +125,7 @@ final class ReplicaManager {
             if (replica.role != Role.FOLLOWER || replica.leaderId != leader) {
                 replica.role = leader < 0 ? Role.OFFLINE : Role.FOLLOWER;
                 replica.leaderId = leader;
-                replica.isr = List.copyOf(isr);
+                replica.isr = sorted(isr);
                 LOG.info("Broker {} is {} for {}-{} (leader {})", brokerId, replica.role, topic, partition, leader);
             }
         }
@@ -145,6 +147,11 @@ final class ReplicaManager {
         if (acks == -1) {
             boolean committed = replica.log.awaitHighWatermark(base + records.size(), Math.max(0, timeoutMs));
             if (!committed) {
+                synchronized (replica) {
+                    if (replica.role != Role.LEADER) {
+                        throw new KafkaException(Errors.NOT_LEADER_OR_FOLLOWER);
+                    }
+                }
                 throw new KafkaException(Errors.NOT_ENOUGH_REPLICAS,
                         "timed out waiting for in-sync replicas");
             }
@@ -370,6 +377,12 @@ final class ReplicaManager {
         if (updated) {
             LOG.info("ISR for {} is now {}", replica.tp, isr);
         }
+    }
+
+    private static List<Integer> sorted(List<Integer> ids) {
+        List<Integer> ordered = new ArrayList<>(ids);
+        ordered.sort(Integer::compareTo);
+        return List.copyOf(ordered);
     }
 
     private static int correlation() {

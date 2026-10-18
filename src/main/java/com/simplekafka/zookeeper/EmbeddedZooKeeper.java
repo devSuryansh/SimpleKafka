@@ -36,6 +36,10 @@ public final class EmbeddedZooKeeper implements Closeable {
     static {
         System.setProperty("zookeeper.admin.enableServer", "false");
         System.setProperty("zookeeper.snapshot.trust.empty", "true");
+        // 0 means "not configured" and ZooKeeper logs a warning on every start.
+        if (System.getProperty("zookeeper.maxCnxns") == null) {
+            System.setProperty("zookeeper.maxCnxns", "1000");
+        }
     }
 
     private final ServerCnxnFactory factory;

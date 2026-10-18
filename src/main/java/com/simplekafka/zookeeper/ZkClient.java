@@ -243,17 +243,30 @@ public final class ZkClient implements Watcher, Closeable {
         }
         try {
             connect();
-            beforeReplay.run();
-            List<Runnable> snapshot;
-            synchronized (registrations) {
-                snapshot = new ArrayList<>(registrations);
-            }
-            for (Runnable registration : snapshot) {
-                registration.run();
-            }
-            afterReplay.run();
         } catch (RuntimeException exception) {
             LOG.error("Failed to reconnect to ZooKeeper", exception);
+            return;
+        }
+        try {
+            beforeReplay.run();
+        } catch (RuntimeException exception) {
+            LOG.error("ZooKeeper reconnect callback failed", exception);
+        }
+        List<Runnable> snapshot;
+        synchronized (registrations) {
+            snapshot = new ArrayList<>(registrations);
+        }
+        for (Runnable registration : snapshot) {
+            try {
+                registration.run();
+            } catch (RuntimeException exception) {
+                LOG.error("Failed to replay a ZooKeeper watch", exception);
+            }
+        }
+        try {
+            afterReplay.run();
+        } catch (RuntimeException exception) {
+            LOG.error("ZooKeeper session-restored callback failed", exception);
         }
     }
 

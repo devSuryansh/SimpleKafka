@@ -96,11 +96,12 @@ public final class Consumer implements Closeable {
                 sleep(Math.min(remainingMs, config.retryBackoffMs()));
                 continue;
             }
-            int wait = (int) Math.min(remainingMs, 1_000L);
+            int socketTimeout = (int) Math.max(1L, remainingMs);
+            int wait = (int) Math.min(Math.max(0L, remainingMs - 50L), 1_000L);
             FetchRequest request = new FetchRequest(topic, partition, position, MAX_BYTES, wait,
                     FetchRequest.CONSUMER_REPLICA_ID);
             try {
-                Metadata.Rpc rpc = metadata.send(leader, ApiKeys.FETCH, request.body(), wait + 2_000);
+                Metadata.Rpc rpc = metadata.send(leader, ApiKeys.FETCH, request.body(), socketTimeout);
                 if (rpc.header().error().retriable()) {
                     metadata.refresh(List.of(topic));
                     continue;

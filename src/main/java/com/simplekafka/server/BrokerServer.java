@@ -15,6 +15,7 @@
 package com.simplekafka.server;
 
 import java.io.Closeable;
+import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -39,6 +40,7 @@ public final class BrokerServer implements Closeable {
     private static final Logger LOG = LoggerFactory.getLogger(BrokerServer.class);
 
     private final BrokerConfig config;
+    private final Object lifecycle = new Object();
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean stopped = new AtomicBoolean();
     private final CountDownLatch shutdown = new CountDownLatch(1);
@@ -55,34 +57,45 @@ public final class BrokerServer implements Closeable {
     }
 
     public void start() {
-        if (!running.compareAndSet(false, true)) {
-            throw new IllegalStateException("broker is already running");
-        }
-        try {
-            cache = new MetadataCache();
-            sockets = new SocketServer(config.host());
-            sockets.bind(config.port());
-            port = sockets.port();
-            zk = new ZkClient(config.zkConnect(), config.zkSessionTimeoutMs());
-            zk.start();
-            zk.ensurePath(ZkPaths.BROKER_IDS);
-            zk.ensurePath(ZkPaths.TOPICS);
-            registerBroker();
-            zk.onReconnect(this::registerBroker, this::onSessionRestored);
-            controller = new Controller(config.brokerId(), zk, cache);
-            replicas = new ReplicaManager(config.brokerId(), config, cache, zk);
-            sockets.setApis(new KafkaApis(replicas, controller, cache));
-            replicas.start();
-            new MetadataLoader(config.brokerId(), zk, cache, replicas, controller).start();
-            controller.elect();
-            sockets.start();
-            LOG.info("SimpleKafka broker {} listening on {}:{}", config.brokerId(), config.host(), port);
-        } catch (Exception exception) {
-            close();
-            if (exception instanceof KafkaException kafkaException) {
-                throw kafkaException;
+        synchronized (lifecycle) {
+            if (stopped.get()) {
+                throw new IllegalStateException("broker has been shut down");
             }
-            throw new KafkaException(Errors.UNKNOWN_SERVER_ERROR, "failed to start broker", exception);
+            if (!running.compareAndSet(false, true)) {
+                throw new IllegalStateException("broker is already running");
+            }
+            try {
+                cache = new MetadataCache();
+                sockets = new SocketServer(config.host());
+                sockets.bind(config.port());
+                port = sockets.port();
+                zk = new ZkClient(config.zkConnect(), config.zkSessionTimeoutMs());
+                zk.start();
+                zk.ensurePath(ZkPaths.BROKER_IDS);
+                zk.ensurePath(ZkPaths.TOPICS);
+                if (!ensureRegistration()) {
+                    throw new KafkaException(Errors.UNKNOWN_SERVER_ERROR,
+                            "broker id " + config.brokerId() + " is already registered");
+                }
+                zk.onReconnect(this::reregisterBroker, this::onSessionRestored);
+                controller = new Controller(config.brokerId(), zk, cache);
+                replicas = new ReplicaManager(config.brokerId(), config, cache, zk);
+                sockets.setApis(new KafkaApis(replicas, controller, cache));
+                replicas.start();
+                new MetadataLoader(config.brokerId(), zk, cache, replicas, controller).start();
+                controller.elect();
+                sockets.start();
+                LOG.info("SimpleKafka broker {} listening on {}:{}", config.brokerId(), config.host(), port);
+            } catch (Exception exception) {
+                cleanup();
+                running.set(false);
+                stopped.set(true);
+                shutdown.countDown();
+                if (exception instanceof KafkaException kafkaException) {
+                    throw kafkaException;
+                }
+                throw new KafkaException(Errors.UNKNOWN_SERVER_ERROR, "failed to start broker", exception);
+            }
         }
     }
 
@@ -119,31 +132,54 @@ public final class BrokerServer implements Closeable {
 
     @Override
     public void close() {
-        if (!stopped.compareAndSet(false, true)) {
-            return;
+        synchronized (lifecycle) {
+            if (!stopped.compareAndSet(false, true)) {
+                return;
+            }
+            running.set(false);
+            cleanup();
+            shutdown.countDown();
+            LOG.info("SimpleKafka broker {} stopped", config.brokerId());
         }
-        running.set(false);
+    }
+
+    private void cleanup() {
         if (sockets != null) {
             sockets.close();
+            sockets = null;
         }
         if (replicas != null) {
             replicas.shutdown();
+            replicas = null;
         }
         if (zk != null) {
             zk.close();
+            zk = null;
         }
-        shutdown.countDown();
-        LOG.info("SimpleKafka broker {} stopped", config.brokerId());
     }
 
-    private void registerBroker() {
-        byte[] data = ZkMetadata.broker(config.host(), port);
-        boolean created = zk.createEphemeral(ZkPaths.broker(config.brokerId()), data);
-        if (!created) {
-            throw new KafkaException(Errors.UNKNOWN_SERVER_ERROR,
-                    "broker id " + config.brokerId() + " is already registered");
+    private void reregisterBroker() {
+        if (!ensureRegistration()) {
+            LOG.error("Broker id {} is already registered with different data", config.brokerId());
         }
-        LOG.info("Registered broker {} at {}:{}", config.brokerId(), config.host(), port);
+    }
+
+    /**
+     * @return {@code false} when another process already owns this broker id
+     */
+    private boolean ensureRegistration() {
+        byte[] data = ZkMetadata.broker(config.host(), port);
+        String path = ZkPaths.broker(config.brokerId());
+        if (zk.createEphemeral(path, data)) {
+            LOG.info("Registered broker {} at {}:{}", config.brokerId(), config.host(), port);
+            return true;
+        }
+        byte[] existing = zk.getData(path);
+        if (existing != null && Arrays.equals(existing, data)) {
+            LOG.info("Broker {} is already registered at {}:{}", config.brokerId(), config.host(), port);
+            return true;
+        }
+        return false;
     }
 
     private void onSessionRestored() {

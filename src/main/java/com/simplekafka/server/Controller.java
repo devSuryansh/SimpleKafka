@@ -88,7 +88,8 @@ public final class Controller {
 
     public synchronized void createTopic(String name, int partitions, short replicationFactor) {
         Utils.requireTopicName(name);
-        if (!active) {
+        if (!active || !stillController()) {
+            active = false;
             throw new KafkaException(Errors.NOT_CONTROLLER);
         }
         if (partitions < 1 || partitions > MAX_PARTITIONS) {

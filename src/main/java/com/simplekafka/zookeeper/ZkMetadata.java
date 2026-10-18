@@ -74,7 +74,9 @@ public final class ZkMetadata {
     }
 
     public static byte[] state(int leader, List<Integer> isr) {
-        return text("leader=" + leader + "\nisr=" + join(isr) + "\n");
+        List<Integer> ordered = new ArrayList<>(isr);
+        ordered.sort(Integer::compareTo);
+        return text("leader=" + leader + "\nisr=" + join(ordered) + "\n");
     }
 
     public static PartitionState parseState(byte[] data) {

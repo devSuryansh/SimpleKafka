@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -84,13 +85,26 @@ public final class SimpleKafka {
     }
 
     private static int zk(CommandLine line) throws Exception {
-        int port = line.optionInt("port", 2181);
-        int tick = line.optionInt("tick-time", 2000);
-        Path dataDir = Path.of(line.option("data-dir", "data/zookeeper"));
-        EmbeddedZooKeeper zooKeeper = new EmbeddedZooKeeper(dataDir, port, tick);
+        Properties properties = new Properties();
+        if (line.has("config")) {
+            try (var input = Files.newInputStream(Path.of(line.required("config")))) {
+                properties.load(input);
+            }
+        }
+        int port = line.has("port") ? line.optionInt("port", 2181) : integer(properties, "clientPort", 2181);
+        int tick = line.has("tick-time") ? line.optionInt("tick-time", 2000) : integer(properties, "tickTime", 2000);
+        String dataDir = properties.getProperty("dataDir", "data/zookeeper");
+        if (line.has("data-dir")) {
+            dataDir = line.required("data-dir");
+        }
+        EmbeddedZooKeeper zooKeeper = new EmbeddedZooKeeper(Path.of(dataDir), port, tick);
+        CountDownLatch stopped = new CountDownLatch(1);
         LOG.info("ZooKeeper listening on {}", zooKeeper.connectString());
-        Runtime.getRuntime().addShutdownHook(new Thread(zooKeeper::close, "simplekafka-zk-shutdown"));
-        Thread.currentThread().join();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            zooKeeper.close();
+            stopped.countDown();
+        }, "simplekafka-zk-shutdown"));
+        stopped.await();
         return 0;
     }
 
@@ -215,6 +229,14 @@ public final class SimpleKafka {
         }
     }
 
+    private static int integer(Properties properties, String key, int fallback) {
+        String value = properties.getProperty(key);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return Integer.parseInt(value.trim());
+    }
+
     private static void override(Properties properties, CommandLine line, String flag, String key) {
         if (line.has(flag)) {
             properties.setProperty(key, line.required(flag));
@@ -226,6 +248,7 @@ public final class SimpleKafka {
                 usage: simplekafka <command> [options]
 
                 zk
+                    --config <file>        reads clientPort, dataDir, and tickTime
                     --port <port>          client port (default 2181)
                     --data-dir <dir>       data directory (default data/zookeeper)
                     --tick-time <ms>       tick time (default 2000)
