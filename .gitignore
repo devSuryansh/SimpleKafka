@@ -1,3 +1,6 @@
+# Broker and coordination data
+/data/
+
 # Compiled class files
 *.class
 
